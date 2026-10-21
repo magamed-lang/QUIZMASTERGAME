@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>QuizMaster Game</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<script src="pdf.min.js"></script>
+<script src="pdf.worker.min.js"></script>
+<style>
+:root{--bg:#f6f7fc;--card:#fff;--tx:#14173a;--mu:#6b6f93;--pr:#6d4aff;--nv:#1b2a6b;--ok:#17a566;--bad:#e5484d;--bd:#e3e5f3;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e1020;--card:#171a33;--tx:#eef0ff;--mu:#9da2cc;--bd:#2a2e55;--nv:#9fb0ff}}
+:root[data-theme="dark"]{--bg:#0e1020;--card:#171a33;--tx:#eef0ff;--mu:#9da2cc;--bd:#2a2e55;--nv:#9fb0ff}
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.w{max-width:560px;margin:0 auto;padding:16px}
+h1{font-size:24px;margin:8px 0;color:var(--nv)}h2{font-size:19px;margin:0 0 8px}
+.c{background:var(--card);border:1px solid var(--bd);border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 2px 10px rgba(30,30,80,.07)}
+.m{color:var(--mu);font-size:14px}
+button,.b{font:inherit;border:0;border-radius:14px;padding:13px 16px;background:var(--pr);color:#fff;font-weight:600;width:100%;cursor:pointer;display:block;text-align:center}
+button.s{background:transparent;color:var(--pr);border:2px solid var(--pr)}
+button:disabled{opacity:.45}
+.o{background:var(--card);color:var(--tx);border:2px solid var(--bd);text-align:left;margin:8px 0;font-weight:500}
+.o.ok{border-color:var(--ok);background:rgba(23,165,102,.15)}.o.bad{border-color:var(--bad);background:rgba(229,72,77,.15)}
+textarea{width:100%;min-height:90px;border-radius:12px;border:2px solid var(--bd);background:var(--bg);color:var(--tx);padding:10px;font:inherit}
+input[type=range]{width:100%;accent-color:var(--pr)}
+.row{display:flex;gap:8px;align-items:center;justify-content:space-between}
+.bar{height:8px;border-radius:8px;background:var(--bd);overflow:hidden}.bar i{display:block;height:100%;background:var(--pr);transition:width .2s linear}
+.big{font-size:44px;font-weight:800;color:var(--pr);text-align:center}
+.pill{background:var(--bd);border-radius:20px;padding:4px 10px;font-size:14px;font-weight:600}
+.hide{display:none}
+label.f{display:block;border:2px dashed var(--pr);border-radius:16px;padding:22px;text-align:center;color:var(--pr);font-weight:600;cursor:pointer}
+</style></head><body><div class="w" id="app"></div>
+<script>
+const $=s=>document.querySelector(s),app=$('#app');
+let bank=[],mistakes=[],best=0,G=null,tm=null;
+function ld(){try{mistakes=JSON.parse(localStorage.getItem('qm_m')||'[]');best=+localStorage.getItem('qm_b')||0}catch(e){}}
+function sv(){try{localStorage.setItem('qm_m',JSON.stringify(mistakes));localStorage.setItem('qm_b',best)}catch(e){}}
+ld();
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const shuf=a=>{a=a.slice();for(let i=a.length-1;i>0;i--){const j=Math.random()*(i+1)|0;[a[i],a[j]]=[a[j],a[i]]}return a};
+
+/* ---------- PDF + parsing ---------- */
+async function pdfText(file){
+  pdfjsLib.GlobalWorkerOptions.workerSrc='pdf.worker.min.js';
+  const d=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;let out=[];
+  for(let p=1;p<=d.numPages;p++){
+    const t=await (await d.getPage(p)).getTextContent(),rows={};
+    t.items.forEach(i=>{const y=Math.round(i.transform[5]/3);(rows[y]=rows[y]||[]).push(i)});
+    Object.keys(rows).map(Number).sort((a,b)=>b-a).forEach(y=>out.push(rows[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(i=>i.str).join(' ').replace(/\s+/g,' ').trim()));
+  }
+  return out.filter(Boolean);
+}
+function parseMCQ(lines){
+  const qs=[];let q=null,keys={},inKey=false;
+  const flush=()=>{if(q&&q.o.length>=2&&q.t)qs.push(q);q=null};
+  for(const L of lines){
+    if(/^(answer\s*key|answers|key)\b/i.test(L))inKey=true;
+    if(inKey){let m,r=/(\d+)\s*[-.):]?\s*\(?([A-Da-d])\b/g;while(m=r.exec(L))keys[+m[1]]=m[2].toUpperCase();continue}
+    let m=L.match(/^\(?(\d+)[.)]\s+(.+)/);
+    if(m&&!/^\(?\d+[.)]\s*[A-Da-d][.)]/.test(L)){flush();q={n:+m[1],t:m[2],o:[],a:null};continue}
+    if(!q)continue;
+    m=L.match(/^\(?([A-Da-d])[.)]\s*(.+)/);
+    if(m){const parts=m[2].split(/\s+\(?[B-Db-d][.)]\s+/);q.o.push(m[2]);if(q.o.length>4)q.o.length=4;continue}
+    m=L.match(/answer\s*[:\-]?\s*\(?([A-Da-d])\b/i);
+    if(m){q.a=m[1].toUpperCase();continue}
+    if(!q.o.length)q.t+=' '+L;else q.o[q.o.length-1]+=' '+L;
+  }
+  flush();
+  return qs.filter(x=>(x.a||keys[x.n])).map(x=>{const k=(x.a||keys[x.n]).charCodeAt(0)-65;return{q:x.t,o:x.o,c:Math.min(k,x.o.length-1)}});
+}
+const STOP=new Set('which about their there these those would could should where while being other because between through during before after under again further'.split(' '));
+function cloze(text){
+  const sents=text.replace(/\s+/g,' ').match(/[^.!?]{40,220}[.!?]/g)||[];
+  const words=[...new Set((text.match(/[A-Za-z]{5,}/g)||[]).map(w=>w.toLowerCase()))].filter(w=>!STOP.has(w));
+  const qs=[];
+  sents.forEach(s=>{
+    const cand=(s.match(/[A-Za-z]{5,}/g)||[]).filter(w=>!STOP.has(w.toLowerCase()));
+    if(!cand.length||words.length<6)return;
+    const ans=cand[Math.random()*cand.length|0],al=ans.toLowerCase();
+    const dis=shuf(words.filter(w=>w!==al&&Math.abs(w.length-al.length)<=2)).slice(0,3);
+    if(dis.length<3)return;
+    const cap=x=>ans[0]===ans[0].toUpperCase()?x[0].toUpperCase()+x.slice(1):x;
+    const opts=shuf([ans,...dis.map(cap)]);
+    qs.push({q:'Fill in the blank: '+s.trim().replace(ans,'_____'),o:opts,c:opts.indexOf(ans)});
+  });
+  return qs;
+}
+async function build(lines,txt){
+  let qs=parseMCQ(lines),mode='test questions found in your PDF';
+  if(qs.length<3){qs=cloze(txt);mode='fill-in-the-blank questions made from your text (no A–D test with answers detected)'}
+  return{qs,mode};
+}
+
+/* ---------- screens ---------- */
+function home(){
+  clearInterval(tm);
+  app.innerHTML=`<h1>🎮 QuizMaster Game</h1><p class="m">Upload a test PDF, play it as a game. Wrong answers are saved to your Mistakes deck.</p>
+  <div class="c"><label class="f">📄 Tap to upload PDF<input id="pdf" type="file" accept="application/pdf" class="hide"></label>
+  <p class="m" style="text-align:center">or paste text</p><textarea id="txt" placeholder="Paste test or study text here"></textarea>
+  <div id="st" class="m"></div></div>
+  <div class="c ${bank.length?'':'hide'}" id="set"><h2>Game setup</h2>
+  <div class="row"><span>Number of questions</span><span class="pill" id="nv"></span></div>
+  <input type="range" id="n" min="1" value="10"><div class="m" id="info"></div><br>
+  <button id="go">▶ Start game</button></div>
+  <div class="c"><div class="row"><div><h2>Mistakes deck</h2><span class="m">${mistakes.length} saved question${mistakes.length==1?'':'s'}</span></div><span class="pill">🏆 Best ${best}</span></div><br>
+  <button class="s" id="pm" ${mistakes.length?'':'disabled'}>Practice my mistakes</button></div>`;
+  $('#pdf').onchange=async e=>{const f=e.target.files[0];if(!f)return;$('#st').textContent='Reading PDF…';
+    try{const L=await pdfText(f);if(!L.length)throw 0;await load(L,L.join(' '))}catch(x){$('#st').textContent='Could not read text from this PDF (scanned image?). Try another file.'}};
+  $('#txt').oninput=e=>{clearTimeout(window._t);window._t=setTimeout(()=>{const t=e.target.value;if(t.trim().length>80)load(t.split(/\n/).map(s=>s.trim()).filter(Boolean),t)},600)};
+  $('#pm').onclick=()=>start(shuf(mistakes).slice(0,20),true);
+  if(bank.length)setup();
+}
+async function load(L,txt){const r=await build(L,txt);bank=r.qs;bank._m=r.mode;
+  if(!bank.length){$('#st').textContent='No questions could be made. Try a PDF with more text.';return}
+  $('#st').textContent='✅ '+bank.length+' '+r.mode;$('#set').classList.remove('hide');setup()}
+function setup(){const n=$('#n');n.max=bank.length;n.value=Math.min(10,bank.length);
+  const u=()=>$('#nv').textContent=n.value+' / '+bank.length;n.oninput=u;u();
+  $('#info').textContent='3 lives ❤️ · 20s per question · streaks give bonus points';
+  $('#go').onclick=()=>start(shuf(bank).slice(0,+n.value),false)}
+
+function start(qs,pr){G={qs,i:0,sc:0,lives:3,streak:0,ok:0,pr,wrong:[],done:false};ask()}
+function ask(){
+  clearInterval(tm);
+  if(G.i>=G.qs.length||G.lives<=0)return end();
+  const q=G.qs[G.i];let t=20;
+  app.innerHTML=`<div class="row"><span class="pill">${'❤️'.repeat(G.lives)||'💔'}</span><span class="pill">⭐ ${G.sc}</span><span class="pill">🔥 ${G.streak}</span></div>
+  <div class="bar" style="margin:12px 0"><i id="tb" style="width:100%"></i></div>
+  <div class="c"><div class="m">Question ${G.i+1} of ${G.qs.length}${G.pr?' · mistakes':''}</div><h2 style="margin-top:6px">${esc(q.q)}</h2>
+  ${q.o.map((o,k)=>`<button class="o" data-k="${k}">${'ABCD'[k]}. ${esc(o)}</button>`).join('')}</div><div id="fb"></div>`;
+  document.querySelectorAll('.o').forEach(b=>b.onclick=()=>pick(+b.dataset.k));
+  tm=setInterval(()=>{t-=.1;$('#tb').style.width=(t/20*100)+'%';if(t<=0)pick(-1)},100);
+}
+function pick(k){
+  clearInterval(tm);const q=G.qs[G.i],right=k===q.c;
+  document.querySelectorAll('.o').forEach((b,j)=>{b.disabled=true;if(j===q.c)b.classList.add('ok');else if(j===k)b.classList.add('bad')});
+  if(right){G.streak++;G.ok++;G.sc+=10+Math.min(G.streak-1,5)*2;
+    if(G.pr)mistakes=mistakes.filter(m=>m.q!==q.q)}
+  else{G.streak=0;G.lives--;G.wrong.push(q);
+    if(!mistakes.some(m=>m.q===q.q))mistakes.push(q)}
+  sv();
+  $('#fb').innerHTML=`<div class="c"><b>${right?'✅ Correct!':(k<0?'⏰ Time up':'❌ Wrong')}</b>${right?'':'<div class="m">Correct answer: '+'ABCD'[q.c]+'. '+esc(q.o[q.c])+'<br>Saved to your Mistakes deck.</div>'}</div><button id="nx">Next</button>`;
+  $('#nx').onclick=()=>{G.i++;ask()};
+  document.querySelectorAll('.pill')[0].textContent='❤️'.repeat(G.lives)||'💔';
+}
+function end(){
+  if(G.sc>best&&!G.pr)best=G.sc;sv();
+  const pct=Math.round(G.ok/Math.max(1,G.i)*100);
+  app.innerHTML=`<h1>${G.lives<=0?'💀 Game over':'🎉 Finished!'}</h1><div class="c"><div class="big">${G.sc}</div><p class="m" style="text-align:center">${G.ok} correct of ${G.i} answered · ${pct}%</p></div>
+  ${G.wrong.length?`<div class="c"><h2>Questions you missed</h2>${G.wrong.map(q=>`<p><b>${esc(q.q)}</b><br><span style="color:var(--ok)">✔ ${esc(q.o[q.c])}</span></p>`).join('')}</div>`:''}
+  <button id="again">Play again</button><br><button class="s" id="hm">Home</button>`;
+  $('#again').onclick=()=>start(shuf(G.pr?mistakes:G.qs.concat()).slice(0,G.qs.length),G.pr);
+  $('#hm').onclick=home;
+}
+home();
+</script></body></html>
